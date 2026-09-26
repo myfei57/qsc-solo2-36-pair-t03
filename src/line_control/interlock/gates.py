@@ -1,9 +1,16 @@
-"""Pre-gates: named conditions that must hold before a step runs."""
+"""Pre-gates: named conditions that must hold before a step runs.
+
+A gate is evaluated against the live plant state every time it is asked:
+each requirement names a registered condition probe, and the verdict lists
+only the requirements whose probe says the condition does not hold right
+now.  A gate is never something an operator arms by hand; it is a question
+the interlock answers with evidence.
+"""
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Sequence
+from typing import Any, Callable, Sequence
 
 from line_control.runtime.errors import (
     GateBlockedError,
@@ -38,11 +45,19 @@ class _Gate:
 
 
 class GateBoard:
-    """A registry of named gates that an operator arms before a step runs."""
+    """A registry of named gates evaluated against live conditions."""
 
     def __init__(self) -> None:
         self._gates: dict[str, _Gate] = {}
-        self._armed: set[tuple[str, str]] = set()
+        self._conditions: dict[str, Callable[[str], bool]] = {}
+
+    def condition(self, name: str, probe: Callable[[str], bool]) -> None:
+        """Register the probe that reports whether a requirement holds."""
+        if not name:
+            raise ValidationError("condition name is required")
+        if not callable(probe):
+            raise ValidationError("a condition probe must be callable", condition=name)
+        self._conditions[name] = probe
 
     def define(self, gate: str, requirements: Sequence[str]) -> None:
         """Declare a gate and the conditions it stands for."""
@@ -50,6 +65,13 @@ class GateBoard:
             raise ValidationError("gate name is required")
         if not requirements:
             raise ValidationError("a gate needs at least one requirement", gate=gate)
+        unknown = [name for name in requirements if name not in self._conditions]
+        if unknown:
+            raise ValidationError(
+                "every gate requirement needs a registered condition",
+                gate=gate,
+                unknown=unknown,
+            )
         self._gates[gate] = _Gate(name=gate, requirements=list(requirements))
 
     def names(self) -> list[str]:
@@ -60,23 +82,13 @@ class GateBoard:
         """Return the requirement names of a gate."""
         return list(self._lookup(gate).requirements)
 
-    def arm(self, gate: str, unit: str) -> None:
-        """Record that a gate stands open for a unit."""
-        self._lookup(gate)
-        self._armed.add((gate, unit))
-
-    def disarm(self, gate: str, unit: str) -> None:
-        """Record that a gate stands closed for a unit."""
-        self._armed.discard((gate, unit))
-
     def evaluate(self, gate: str, unit: str) -> GateVerdict:
         """Evaluate a gate without raising."""
         declared = self._lookup(gate)
-        if (gate, unit) in self._armed:
-            return GateVerdict(gate=gate, unit=unit, open=True)
-        return GateVerdict(
-            gate=gate, unit=unit, open=False, blocked_by=tuple(declared.requirements)
+        blocked = tuple(
+            name for name in declared.requirements if not self._holds(name, unit)
         )
+        return GateVerdict(gate=gate, unit=unit, open=not blocked, blocked_by=blocked)
 
     def require(self, gate: str, unit: str) -> GateVerdict:
         """Evaluate a gate and refuse the step when it is closed."""
@@ -93,6 +105,13 @@ class GateBoard:
     def report(self, unit: str) -> list[GateVerdict]:
         """Evaluate every declared gate for one unit."""
         return [self.evaluate(gate, unit) for gate in self.names()]
+
+    def _holds(self, condition: str, unit: str) -> bool:
+        """Report whether one requirement holds, failing closed."""
+        probe = self._conditions.get(condition)
+        if probe is None:
+            return False
+        return bool(probe(unit))
 
     def _lookup(self, gate: str) -> _Gate:
         try:

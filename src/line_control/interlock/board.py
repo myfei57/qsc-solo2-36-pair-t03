@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Sequence
+from typing import Callable, Sequence
 
 from line_control.interlock.gates import GateBoard, GateVerdict
 from line_control.interlock.latches import LatchBoard, LatchState
@@ -63,6 +63,10 @@ class InterlockBoard:
     def sequence_names(self) -> list[str]:
         """Return every declared sequence name."""
         return sorted(self._sequences)
+
+    def define_condition(self, name: str, probe: Callable[[str], bool]) -> None:
+        """Register the probe a gate requirement stands for."""
+        self._gates.condition(name, probe)
 
     def define_gate(self, gate: str, requirements: Sequence[str]) -> None:
         """Declare a pre-gate."""

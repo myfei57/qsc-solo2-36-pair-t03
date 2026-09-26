@@ -233,6 +233,18 @@ class LineSupervisor:
 
     # ----------------------------------------------------------------- wiring
     def _declare_gates(self) -> None:
+        latches = self._board.latches
+        self._board.define_condition("seal_established", self._seal.established)
+        self._board.define_condition("compressor_durable", self._compressor.durable)
+        self._board.define_condition(
+            "feed_not_latched", lambda unit: not latches.is_set(unit, "feed")
+        )
+        self._board.define_condition(
+            "ignition_not_latched", lambda unit: not latches.is_set(unit, "ignition")
+        )
+        self._board.define_condition(
+            "no_exhaust_alarm", lambda unit: not self._exhaust.alarm(unit)
+        )
         self._board.define_gate(
             "feed_open",
             [
