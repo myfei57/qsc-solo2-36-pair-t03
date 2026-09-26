@@ -246,6 +246,18 @@ class LineSupervisor:
             "start_ready",
             ["no_exhaust_alarm", "feed_not_latched", "ignition_not_latched"],
         )
+        probes = {
+            "seal_established": self._seal.established,
+            "compressor_durable": self._compressor.durable,
+            "feed_not_latched": lambda unit: not self._feed.latched(unit),
+            "ignition_not_latched": lambda unit: not self._board.latches.is_set(
+                unit, "ignition"
+            ),
+            "no_exhaust_alarm": lambda unit: not self._exhaust.alarm(unit),
+        }
+        for gate in self.gates():
+            for requirement in self._board.gates.requirements(gate):
+                self._board.bind_gate(gate, requirement, probes[requirement])
 
     def _declare_tables(self) -> None:
         table = DecisionTable(READINESS_TABLE, fallback="ready")

@@ -1,15 +1,24 @@
-"""Pre-gates: named conditions that must hold before a step runs."""
+"""Pre-gates: named conditions that must hold before a step runs.
+
+A gate stands for a list of requirements.  Each requirement is bound to a
+live probe -- a callable that answers the question for one unit by reading
+the record stream.  Evaluating the gate runs every probe and reports the
+requirements that do not currently hold.  A requirement without a probe
+fails closed, so a miswired gate can never silently open.
+"""
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Sequence
+from typing import Any, Callable, Sequence
 
 from line_control.runtime.errors import (
     GateBlockedError,
     UnknownReferenceError,
     ValidationError,
 )
+
+RequirementProbe = Callable[[str], bool]
 
 
 @dataclass(frozen=True)
@@ -35,14 +44,14 @@ class GateVerdict:
 class _Gate:
     name: str
     requirements: list[str] = field(default_factory=list)
+    probes: dict[str, RequirementProbe] = field(default_factory=dict)
 
 
 class GateBoard:
-    """A registry of named gates that an operator arms before a step runs."""
+    """A registry of named gates whose requirements are read live."""
 
     def __init__(self) -> None:
         self._gates: dict[str, _Gate] = {}
-        self._armed: set[tuple[str, str]] = set()
 
     def define(self, gate: str, requirements: Sequence[str]) -> None:
         """Declare a gate and the conditions it stands for."""
@@ -52,6 +61,19 @@ class GateBoard:
             raise ValidationError("a gate needs at least one requirement", gate=gate)
         self._gates[gate] = _Gate(name=gate, requirements=list(requirements))
 
+    def bind(
+        self, gate: str, requirement: str, probe: RequirementProbe
+    ) -> None:
+        """Bind one requirement of a gate to the live probe that proves it."""
+        declared = self._lookup(gate)
+        if requirement not in declared.requirements:
+            raise ValidationError(
+                f"{requirement} is not a requirement of gate {gate}",
+                gate=gate,
+                requirement=requirement,
+            )
+        declared.probes[requirement] = probe
+
     def names(self) -> list[str]:
         """Return every declared gate name."""
         return sorted(self._gates)
@@ -60,22 +82,21 @@ class GateBoard:
         """Return the requirement names of a gate."""
         return list(self._lookup(gate).requirements)
 
-    def arm(self, gate: str, unit: str) -> None:
-        """Record that a gate stands open for a unit."""
-        self._lookup(gate)
-        self._armed.add((gate, unit))
-
-    def disarm(self, gate: str, unit: str) -> None:
-        """Record that a gate stands closed for a unit."""
-        self._armed.discard((gate, unit))
-
     def evaluate(self, gate: str, unit: str) -> GateVerdict:
-        """Evaluate a gate without raising."""
+        """Evaluate a gate without raising, naming every missing requirement."""
         declared = self._lookup(gate)
-        if (gate, unit) in self._armed:
-            return GateVerdict(gate=gate, unit=unit, open=True)
+        missing: list[str] = []
+        for requirement in declared.requirements:
+            probe = declared.probes.get(requirement)
+            # An unbound requirement fails closed: a gate is only as open as
+            # the evidence wired behind each of its conditions.
+            if probe is None or not probe(unit):
+                missing.append(requirement)
         return GateVerdict(
-            gate=gate, unit=unit, open=False, blocked_by=tuple(declared.requirements)
+            gate=gate,
+            unit=unit,
+            open=not missing,
+            blocked_by=tuple(missing),
         )
 
     def require(self, gate: str, unit: str) -> GateVerdict:
@@ -83,7 +104,8 @@ class GateBoard:
         verdict = self.evaluate(gate, unit)
         if not verdict.open:
             raise GateBlockedError(
-                f"gate {gate} is closed for unit {unit}",
+                f"gate {gate} is closed for unit {unit}; "
+                f"unmet requirement(s): {', '.join(verdict.blocked_by)}",
                 gate=gate,
                 unit=unit,
                 blocked_by=list(verdict.blocked_by),

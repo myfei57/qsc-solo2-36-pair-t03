@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Sequence
+from typing import Callable, Sequence
 
 from line_control.interlock.gates import GateBoard, GateVerdict
 from line_control.interlock.latches import LatchBoard, LatchState
@@ -67,6 +67,12 @@ class InterlockBoard:
     def define_gate(self, gate: str, requirements: Sequence[str]) -> None:
         """Declare a pre-gate."""
         self._gates.define(gate, requirements)
+
+    def bind_gate(
+        self, gate: str, requirement: str, probe: Callable[[str], bool]
+    ) -> None:
+        """Bind one pre-gate requirement to the live probe that proves it."""
+        self._gates.bind(gate, requirement, probe)
 
     def require_gate(self, gate: str, unit: str) -> GateVerdict:
         """Refuse the step when a pre-gate is closed."""
